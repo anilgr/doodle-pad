@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Live RDP + Bézier</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            touch-action: none;
+        }
+
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            background: white;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="canvas"></canvas>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        function resizeCanvas() {
+            const h = window.innerHeight;
+            const w = window.innerWidth;
+            canvas.style.height = h + "px";
+            canvas.style.width = w + "px";
+            canvas.height = h
+            canvas.width = w;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        let rawPoints = [];
+        let isDrawing = false;
+        let paths = [];
+        let simplified = []
+
+        canvas.addEventListener('pointerdown', e => {
+            isDrawing = true;
+            rawPoints = [{ x: e.clientX, y: e.clientY }];
+        });
+
+        canvas.addEventListener('pointermove', e => {
+            if (!isDrawing) return;
+
+            setTimeout(() => {
+                rawPoints.push({ x: e.clientX, y: e.clientY });
+                const spaced = sampleByDistanceKeepLast(rawPoints, 30 * Math.max(window.innerHeight, window.innerWidth) * 0.0005);
+                console.log(spaced.length)
+                simplified = simplifyLatest(spaced, 5, Math.min(spaced.length - 1, Number.POSITIVE_INFINITY)); // Lower tolerance = smoother but more points
+                drawSmoothBezier();
+            }, 10)
+        });
+
+        canvas.addEventListener('pointerup', () => {
+            console.log("up")
+            isDrawing = false;
+            // if (simplified.length > 2)
+            paths.push(simplified)
+        });
+
+        function sampleByDistanceKeepLast(points, minDistance) {
+            if (points.length === 0) return [];
+
+            const sampled = [points[0]];
+            let lastPoint = points[0];
+
+            for (let i = 1; i < points.length - 1; i++) {
+                const dx = points[i].x - lastPoint.x;
+                const dy = points[i].y - lastPoint.y;
+                const distSq = dx * dx + dy * dy;
+
+                if (distSq >= minDistance * minDistance) {
+                    sampled.push(points[i]);
+                    lastPoint = points[i];
+                }
+            }
+
+            // Always keep the last point
+            const last = points[points.length - 1];
+            const lastSampled = sampled[sampled.length - 1];
+            if (last !== lastSampled) {
+                sampled.push(last);
+            }
+
+            return sampled;
+        }
+
+
+
+        function simplifyLatest(points, tolerance, recentCount) {
+            if (points.length < 3 || recentCount < 3) return points;
+
+            const splitIndex = Math.max(0, points.length - recentCount);
+            const head = points.slice(0, splitIndex);           // earlier points
+            const tail = points.slice(splitIndex);              // latest points
+
+            const simplifiedTail = simplify(tail, tolerance);   // apply RDP to latest
+
+            return head.concat(simplifiedTail);                 // combine both
+        }
+
+
+        // --- Ramer–Douglas–Peucker Simplification ---
+        function simplify(points, tolerance) {
+            const sqTolerance = tolerance * tolerance;
+            if (points.length < 3) return points;
+
+            function getSqDist(p1, p2) {
+                const dx = p1.x - p2.x;
+                const dy = p1.y - p2.y;
+                return dx * dx + dy * dy;
+            }
+
+            function getSqSegDist(p, p1, p2) {
+                let x = p1.x, y = p1.y;
+                let dx = p2.x - x, dy = p2.y - y;
+                if (dx !== 0 || dy !== 0) {
+                    const t = ((p.x - x) * dx + (p.y - y) * dy) / (dx * dx + dy * dy);
+                    if (t > 1) { x = p2.x; y = p2.y; }
+                    else if (t > 0) { x += dx * t; y += dy * t; }
+                }
+                dx = p.x - x;
+                dy = p.y - y;
+                return dx * dx + dy * dy;
+            }
+
+            function rdp(start, end) {
+                let maxSqDist = sqTolerance;
+                let index = -1;
+
+                for (let i = start + 1; i < end; i++) {
+                    const sqDist = getSqSegDist(points[i], points[start], points[end]);
+                    if (sqDist > maxSqDist) {
+                        index = i;
+                        maxSqDist = sqDist;
+                    }
+                }
+
+                if (index !== -1) {
+                    const left = rdp(start, index);
+                    const right = rdp(index, end);
+                    return left.slice(0, -1).concat(right);
+                } else {
+                    return [points[start], points[end]];
+                }
+            }
+
+            return rdp(0, points.length - 1);
+        }
+
+        // --- Draw Smooth Bézier ---
+        function drawSmoothBezier() {
+            const all_paths = [...paths, simplified];
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            all_paths.forEach((points, index) => {
+                if (points.length < 2) return;
+
+                ctx.beginPath();
+                ctx.lineWidth = 10;
+                ctx.strokeStyle = 'black';
+                ctx.moveTo(points[0].x, points[0].y);
+
+                for (let i = 1; i < points.length - 2; i++) {
+                    const xc = (points[i].x + points[i + 1].x) / 2;
+                    const yc = (points[i].y + points[i + 1].y) / 2;
+                    ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc);
+                }
+
+                // Final segment
+                const penult = points[points.length - 2];
+                const last = points[points.length - 1];
+                ctx.quadraticCurveTo(penult.x, penult.y, last.x, last.y);
+                ctx.stroke();
+                if (index === all_paths.length - 1) {
+                    ctx.beginPath();
+                    ctx.fillStyle = "red";
+                    ctx.arc(last.x, last.y, 5, 0, 2 * Math.PI)
+                    ctx.fill();
+                }
+            });
+        }
+    </script>
+</body>
+
+</html>
